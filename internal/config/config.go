@@ -12,8 +12,9 @@ type Config struct {
 	FrigateURL           string
 	FrigateEventLimit    int
 	TelegramChatID       int64
-	TelegramErrorChatID	 int64
+	TelegramErrorChatID  int64
 	SleepTime            int
+	SmallEvent           bool
 	FrigateExternalURL   string
 	RedisAddr            string
 	RedisPassword        string
@@ -34,6 +35,7 @@ func New() *Config {
 		FrigateURL:           getEnv("FRIGATE_URL", "http://localhost:5000"),
 		FrigateEventLimit:    getEnvAsInt("FRIGATE_EVENT_LIMIT", 20),
 		Debug:                getEnvAsBool("DEBUG", false),
+		SmallEvent:           getEnvAsBool("SMALL_EVENT", true),
 		TelegramChatID:       getEnvAsInt64("TELEGRAM_CHAT_ID", 0),
 		TelegramErrorChatID:  getEnvAsInt64("TELEGRAM_ERROR_CHAT_ID", getEnvAsInt64("TELEGRAM_CHAT_ID", 0)),
 		SleepTime:            getEnvAsInt("SLEEP_TIME", 5),
