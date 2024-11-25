@@ -34,6 +34,7 @@ docker compose up -d
 | `FRIGATE_EVENT_LIMIT` | `20`| 	Limit the number of events returned. |
 | `DEBUG` | `False` | Debug mode. |
 | `TELEGRAM_CHAT_ID` | `0` | Telegram chat id. |
+| `TELEGRAM_ERROR_CHAT_ID` | `0` | Telegram chat id, errors only. |
 | `SLEEP_TIME`| `5` | Sleep time after cycle, in second. |
 | `FRIGATE_EXTERNAL_URL` | `http://localhost:5000` | External link in frigate(need for generate link in message). |
 | `TZ` | `""` | Timezone |
