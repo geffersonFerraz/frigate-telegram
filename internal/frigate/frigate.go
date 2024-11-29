@@ -1,6 +1,7 @@
 package frigate
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,7 +17,8 @@ import (
 	"github.com/oldtyt/frigate-telegram/internal/log"
 	"github.com/oldtyt/frigate-telegram/internal/redis"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 )
 
 type EventsStruct []struct {
@@ -101,39 +103,46 @@ func GetTagList(Tags []any) []string {
 	return my_tags
 }
 
-func ErrorSend(TextError string, bot *tgbotapi.BotAPI, EventID string) {
+func ErrorSend(TextError string, b *bot.Bot, EventID string) {
 	conf := config.New()
 	TextError += "\nEventID: " + EventID
-	_, err := bot.Send(tgbotapi.NewMessage(conf.TelegramErrorChatID, TextError))
+
+	helloMsg := &bot.SendMessageParams{
+		ChatID: conf.TelegramErrorChatID,
+		Text:   TextError,
+	}
+	log.Debug.Println("Error send: " + TextError)
+
+	_, err := b.SendMessage(context.Background(), helloMsg)
 	if err != nil {
-		log.Error.Println(err.Error())
+		log.Error.Println("Error sending message: " + err.Error())
 	}
 }
 
-func SaveThumbnail(EventID string, Thumbnail string, bot *tgbotapi.BotAPI) string {
+func SaveThumbnail(EventID string, Thumbnail string, b *bot.Bot) string {
 	// Decode string Thumbnail base64
 	dec, err := base64.StdEncoding.DecodeString(Thumbnail)
 	if err != nil {
-		ErrorSend("Error when base64 string decode: "+err.Error(), bot, EventID)
+		ErrorSend("Error when base64 string decode: "+err.Error(), b, EventID)
 	}
 
 	// Generate uniq filename
 	filename := "/tmp/" + EventID + ".jpg"
 	f, err := os.Create(filename)
 	if err != nil {
-		ErrorSend("Error when create file: "+err.Error(), bot, EventID)
+		ErrorSend("Error when create file: "+err.Error(), b, EventID)
 	}
 	defer f.Close()
 	if _, err := f.Write(dec); err != nil {
-		ErrorSend("Error when write file: "+err.Error(), bot, EventID)
+		ErrorSend("Error when write file: "+err.Error(), b, EventID)
 	}
 	if err := f.Sync(); err != nil {
-		ErrorSend("Error when sync file: "+err.Error(), bot, EventID)
+		ErrorSend("Error when sync file: "+err.Error(), b, EventID)
 	}
 	return filename
 }
 
-func GetEvents(FrigateURL string, bot *tgbotapi.BotAPI, SetBefore bool) EventsStruct {
+func GetEvents(FrigateURL string, b *bot.Bot, SetBefore bool) EventsStruct {
 	conf := config.New()
 
 	FrigateURL = FrigateURL + "?limit=" + strconv.Itoa(conf.FrigateEventLimit)
@@ -144,41 +153,50 @@ func GetEvents(FrigateURL string, bot *tgbotapi.BotAPI, SetBefore bool) EventsSt
 		FrigateURL = FrigateURL + "&before=" + strconv.FormatInt(timestamp, 10)
 	}
 
-	log.Debug.Println("Geting events from Frigate via URL: " + FrigateURL)
+	if time.Now().Second()%10 == 0 {
+		log.Debug.Println("Geting events from Frigate via URL: " + FrigateURL)
+	}
 
 	// Request to Frigate
 	resp, err := http.Get(FrigateURL)
 	if err != nil {
-		ErrorSend("Error get events from Frigate, error: "+err.Error(), bot, "ALL")
+		ErrorSend("Error get events from Frigate, error: "+err.Error(), b, "ALL")
+		return nil
+	}
+	if resp == nil || resp.Body == nil {
+		ErrorSend("Error get events from Frigate, resp.Body is nil! URL: "+FrigateURL, b, "ALL")
+		return nil
 	}
 	defer resp.Body.Close()
-
 	// Check response status code
 	if resp.StatusCode != 200 {
-		ErrorSend("Response status != 200, when getting events from Frigate.\nExit.", bot, "ALL")
+		ErrorSend(fmt.Sprintf("Response status != 200, when getting events from Frigate. Was %d.\nExit.", resp.StatusCode), b, "ALL")
+		return nil
 	}
 
 	// Read data from response
 	byteValue, err := io.ReadAll(resp.Body)
 	if err != nil {
-		ErrorSend("Can't read JSON: "+err.Error(), bot, "ALL")
+		ErrorSend("Can't read JSON: "+err.Error(), b, "ALL")
+		return nil
 	}
 
 	// Parse data from JSON to struct
 	err1 := json.Unmarshal(byteValue, &Events)
 	if err1 != nil {
-		ErrorSend("Error unmarshal json: "+err1.Error(), bot, "ALL")
+		ErrorSend("Error unmarshal json: "+err1.Error()+" URL: "+FrigateURL, b, "ALL")
 		if e, ok := err.(*json.SyntaxError); ok {
-			log.Info.Println("syntax error at byte offset " + strconv.Itoa(int(e.Offset)))
+			log.Info.Println("syntax error at byte offset " + strconv.Itoa(int(e.Offset)) + " URL: " + FrigateURL)
 		}
-		log.Info.Println("Exit.")
+		log.Info.Println("Exit. URL: " + FrigateURL)
+		return nil
 	}
 
 	// Return Events
 	return Events
 }
 
-func SaveClip(EventID string, bot *tgbotapi.BotAPI) string {
+func SaveClip(EventID string, b *bot.Bot) string {
 	// Get config
 	conf := config.New()
 
@@ -191,34 +209,34 @@ func SaveClip(EventID string, bot *tgbotapi.BotAPI) string {
 	// Create clip file
 	f, err := os.Create(filename)
 	if err != nil {
-		ErrorSend("Error when create file: "+err.Error(), bot, EventID)
+		ErrorSend("Error when create file: "+err.Error(), b, EventID)
 	}
 	defer f.Close()
 
 	// Download clip file
 	resp, err := http.Get(ClipURL)
 	if err != nil {
-		ErrorSend("Error clip download: "+err.Error(), bot, EventID)
+		ErrorSend("Error clip download: "+err.Error(), b, EventID)
 	}
 	defer resp.Body.Close()
 
 	// Check server response
 	if resp.StatusCode != http.StatusOK {
-		ErrorSend("Return bad status: "+resp.Status, bot, EventID)
+		ErrorSend("Return bad status: "+resp.Status, b, EventID)
 	}
 
 	// Writer the body to file
 	_, err = io.Copy(f, resp.Body)
 	if err != nil {
-		ErrorSend("Error clip write: "+err.Error(), bot, EventID)
+		ErrorSend("Error clip write: "+err.Error(), b, EventID)
 	}
 	return filename
 }
 
-func SendMessageEvent(FrigateEvent EventStruct, bot *tgbotapi.BotAPI) {
+func SendMessageEvent(FrigateEvent EventStruct, b *bot.Bot) {
 	// Get config
 	conf := config.New()
-
+	ctx := context.Background()
 	redis.AddNewEvent(FrigateEvent.ID, "InWork", time.Duration(60)*time.Second)
 
 	// Prepare text message
@@ -246,46 +264,56 @@ func SendMessageEvent(FrigateEvent EventStruct, bot *tgbotapi.BotAPI) {
 		text += "┗[Source clip](" + conf.FrigateExternalURL + "/api/events/" + FrigateEvent.ID + "/clip.mp4)\n"
 	}
 	// Save thumbnail
-	FilePathThumbnail := SaveThumbnail(FrigateEvent.ID, FrigateEvent.Thumbnail, bot)
+	FilePathThumbnail := SaveThumbnail(FrigateEvent.ID, FrigateEvent.Thumbnail, b)
+
+	filePathThumbnail, err := os.Open(FilePathThumbnail)
+	if err != nil {
+		ErrorSend("Error opening clip file: "+err.Error(), b, FrigateEvent.ID)
+	}
+	defer filePathThumbnail.Close()
 	defer os.Remove(FilePathThumbnail)
 
-	var medias []interface{}
-	MediaThumbnail := tgbotapi.NewInputMediaPhoto(tgbotapi.FilePath(FilePathThumbnail))
-	MediaThumbnail.Caption = text
-	MediaThumbnail.ParseMode = tgbotapi.ModeMarkdown
-	medias = append(medias, MediaThumbnail)
+	thumb := &models.InputMediaPhoto{
+		Media:           "attach://" + FilePathThumbnail,
+		MediaAttachment: filePathThumbnail,
+		Caption:         text,
+	}
 
+	var video *models.InputMediaVideo
 	if FrigateEvent.HasClip && FrigateEvent.EndTime != 0 {
-		// Save clip
-		FilePathClip := SaveClip(FrigateEvent.ID, bot)
-		defer os.Remove(FilePathClip)
+		FilePathClip := SaveClip(FrigateEvent.ID, b)
 
-		videoInfo, err := os.Stat(FilePathClip)
+		file, err := os.Open(FilePathClip)
 		if err != nil {
-			ErrorSend("Error receiving information about the clip file: "+err.Error(), bot, FrigateEvent.ID)
+			ErrorSend("Error opening clip file: "+err.Error(), b, FrigateEvent.ID)
+		}
+		defer file.Close()
+		defer os.Remove(FilePathClip)
+		video = &models.InputMediaVideo{
+			MediaAttachment: file,
+			Media:           "attach://" + FilePathClip,
 		}
 
-		if videoInfo.Size() < 52428800 {
-			// Telegram don't send large file see for more: https://github.com/OldTyT/frigate-telegram/issues/5
-			// Add clip to media group
-			MediaClip := tgbotapi.NewInputMediaVideo(tgbotapi.FilePath(FilePathClip))
-			medias = append(medias, MediaClip)
-		}
 	}
 
-	// Create message
-	msg := tgbotapi.MediaGroupConfig{
-		ChatID: conf.TelegramChatID,
-		Media:  medias,
+	medias := []models.InputMedia{
+		thumb,
 	}
-	messages, err := bot.SendMediaGroup(msg)
+	if video != nil {
+		medias = append(medias, video)
+	}
+
+	mediaMsg := &bot.SendMediaGroupParams{
+		ChatID:          conf.TelegramChatID,
+		MessageThreadID: getMessageThreadId(FrigateEvent.Camera),
+		Media:           medias,
+	}
+	log.Debug.Println("sending message " + FrigateEvent.Camera)
+	_, err = b.SendMediaGroup(ctx, mediaMsg)
 	if err != nil {
-		ErrorSend("Error send media group message: "+err.Error(), bot, FrigateEvent.ID)
+		log.Error.Println("Error sending media group: " + err.Error())
 	}
 
-	if messages == nil {
-		ErrorSend("No received messages", bot, FrigateEvent.ID)
-	}
 	var State string
 	State = "InProgress"
 	if FrigateEvent.EndTime != 0 {
@@ -303,8 +331,7 @@ func StringsContains(MyStr string, MySlice []string) bool {
 	return false
 }
 
-func ParseEvents(FrigateEvents EventsStruct, bot *tgbotapi.BotAPI, WatchDog bool) {
-	// Parse events
+func ParseEvents(FrigateEvents EventsStruct, b *bot.Bot, WatchDog bool) {
 	conf := config.New()
 	RedisKeyPrefix := ""
 	if WatchDog {
@@ -325,15 +352,28 @@ func ParseEvents(FrigateEvents EventsStruct, bot *tgbotapi.BotAPI, WatchDog bool
 		}
 		if redis.CheckEvent(RedisKeyPrefix + FrigateEvents[Event].ID) {
 			if WatchDog {
-				SendTextEvent(FrigateEvents[Event], bot)
+				SendTextEvent(FrigateEvents[Event], b)
 			} else {
-				go SendMessageEvent(FrigateEvents[Event], bot)
+				go SendMessageEvent(FrigateEvents[Event], b)
 			}
 		}
 	}
 }
 
-func SendTextEvent(FrigateEvent EventStruct, bot *tgbotapi.BotAPI) {
+func getMessageThreadId(camera string) int {
+	threadList := make(map[string]int)
+	threadList["General"] = 0
+	threadList["Bolacha"] = 2
+	threadList["Rua"] = 3
+	threadList["Tras"] = 4
+	threadList["RuaMAto"] = 5
+	threadList["Portao"] = 26
+
+	return threadList[camera]
+}
+
+func SendTextEvent(FrigateEvent EventStruct, b *bot.Bot) {
+	ctx := context.Background()
 	conf := config.New()
 	text := "*New event*\n"
 	text += "┣*Camera*\n┗ `" + FrigateEvent.Camera + "`\n"
@@ -346,20 +386,23 @@ func SendTextEvent(FrigateEvent EventStruct, bot *tgbotapi.BotAPI) {
 		text += "┣*Zones*\n┗ `" + strings.Join(GetTagList(FrigateEvent.Zones), ", ") + "`\n"
 		text += "┣*Event URL*\n┗ " + conf.FrigateExternalURL + "/events?cameras=" + FrigateEvent.Camera + "&labels=" + FrigateEvent.Label + "&zones=" + strings.Join(GetTagList(FrigateEvent.Zones), ",")
 	}
-	msg := tgbotapi.NewMessage(conf.TelegramChatID, text)
-	msg.ParseMode = tgbotapi.ModeMarkdown
-	_, err := bot.Send(msg)
+	message := &bot.SendMessageParams{
+		ChatID:          conf.TelegramChatID,
+		Text:            text,
+		MessageThreadID: getMessageThreadId(FrigateEvent.Camera),
+	}
+	_, err := b.SendMessage(ctx, message)
 	if err != nil {
-		log.Error.Println(err.Error())
+		log.Error.Println("Error sending message: " + err.Error())
 	}
 	redis.AddNewEvent("WatchDog_"+FrigateEvent.ID, "Finished", time.Duration(conf.RedisTTL)*time.Second)
 }
 
-func NotifyEvents(bot *tgbotapi.BotAPI, FrigateEventsURL string) {
+func NotifyEvents(b *bot.Bot, FrigateEventsURL string) {
 	conf := config.New()
 	for {
-		FrigateEvents := GetEvents(FrigateEventsURL, bot, false)
-		ParseEvents(FrigateEvents, bot, true)
+		FrigateEvents := GetEvents(FrigateEventsURL, b, false)
+		ParseEvents(FrigateEvents, b, true)
 		time.Sleep(time.Duration(conf.WatchDogSleepTime) * time.Second)
 	}
 }

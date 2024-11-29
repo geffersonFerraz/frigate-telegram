@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"os"
+	"os/signal"
 	"strconv"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot"
 	"github.com/oldtyt/frigate-telegram/internal/config"
 	"github.com/oldtyt/frigate-telegram/internal/frigate"
 	"github.com/oldtyt/frigate-telegram/internal/log"
@@ -16,48 +19,10 @@ var FrigateEvents frigate.EventsStruct
 // FrigateEvent is frigate event struct
 var FrigateEvent frigate.EventStruct
 
-// PongBot is needed to check the work of the bot.
-func PongBot(bot *tgbotapi.BotAPI) {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	updates := bot.GetUpdatesChan(u)
-
-	for update := range updates {
-		if update.Message == nil { // ignore any non-Message updates
-			continue
-		}
-
-		if !update.Message.IsCommand() { // ignore any non-command Messages
-			continue
-		}
-
-		// Create a new MessageConfig. We don't have text yet,
-		// so we leave it empty.
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "")
-
-		// Extract the command from the Message.
-		switch update.Message.Command() {
-		case "help":
-			msg.Text = "I understand /ping."
-		case "ping":
-			msg.Text = "pong"
-		case "pong":
-			msg.Text = "ping"
-		case "status":
-			msg.Text = "I'm ok."
-		default:
-			msg.Text = "I don't know that command"
-		}
-
-		if _, err := bot.Send(msg); err != nil {
-			log.Error.Fatalln("Error sending message: " + err.Error())
-		}
-	}
-}
-
 func main() {
-	// Initializing logger
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
 	log.LogFunc()
 	// Get config
 	conf := config.New()
@@ -67,33 +32,39 @@ func main() {
 	startupMsg += "Frigate URL:  " + conf.FrigateURL + "\n"
 	log.Info.Println(startupMsg)
 
+	opts := []bot.Option{}
+
 	// Initializing telegram bot
-	bot, err := tgbotapi.NewBotAPI(conf.TelegramBotToken)
+	b, err := bot.New(conf.TelegramBotToken, opts...)
 	if err != nil {
 		log.Error.Fatalln("Error initalizing telegram bot: " + err.Error())
 	}
-	bot.Debug = conf.Debug
-	log.Info.Println("Authorized on account " + bot.Self.UserName)
+	go b.Start(ctx)
 
-	// Send startup msg.
-	_, errmsg := bot.Send(tgbotapi.NewMessage(conf.TelegramChatID, startupMsg))
-	if errmsg != nil {
-		log.Error.Println(errmsg.Error())
+	// Send startup msg. conf.TelegramErrorChatID, startupMsg))
+	helloMsg := &bot.SendMessageParams{
+		ChatID: conf.TelegramErrorChatID,
+		Text:   startupMsg,
 	}
+	b.SendMessage(ctx, helloMsg)
 
 	// Starting ping command handler(healthcheck)
-	go PongBot(bot)
 
 	FrigateEventsURL := conf.FrigateURL + "/api/events"
 
 	if conf.SendTextEvent {
-		go frigate.NotifyEvents(bot, FrigateEventsURL)
+		go frigate.NotifyEvents(b, FrigateEventsURL)
 	}
 	// Starting loop for getting events from Frigate
 	for {
-		FrigateEvents := frigate.GetEvents(FrigateEventsURL, bot, true)
-		frigate.ParseEvents(FrigateEvents, bot, false)
+		FrigateEvents := frigate.GetEvents(FrigateEventsURL, b, true)
+		if FrigateEvents == nil {
+			continue
+		}
+		frigate.ParseEvents(FrigateEvents, b, false)
 		time.Sleep(time.Duration(conf.SleepTime) * time.Second)
-		log.Debug.Println("Sleeping for " + strconv.Itoa(conf.SleepTime) + " seconds.")
+		if time.Now().Second()%10 == 0 {
+			log.Debug.Println("Sleeping for " + strconv.Itoa(conf.SleepTime) + " seconds.")
+		}
 	}
 }
