@@ -55,16 +55,17 @@ func main() {
 	if conf.SendTextEvent {
 		go frigate.NotifyEvents(b, FrigateEventsURL)
 	}
-	// Starting loop for getting events from Frigate
+
+	if conf.SendInProgressEvent {
+		go frigate.NotifyInProgressEvents(b, FrigateEventsURL)
+	}
+
 	for {
-		FrigateEvents := frigate.GetEvents(FrigateEventsURL, b, true)
-		if FrigateEvents == nil {
-			continue
-		}
-		frigate.ParseEvents(FrigateEvents, b, false)
+		go frigate.DefaultEventsLoop(b, FrigateEventsURL)
 		time.Sleep(time.Duration(conf.SleepTime) * time.Second)
 		if time.Now().Second()%10 == 0 {
 			log.Debug.Println("Sleeping for " + strconv.Itoa(conf.SleepTime) + " seconds.")
 		}
 	}
+
 }

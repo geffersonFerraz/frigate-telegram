@@ -5,11 +5,12 @@ COPY . $GOPATH/frigate-telegram
 
 RUN apk --no-cache add binutils && \
     go build . && \
-    strip frigate-telegram
+    strip frigate-telegram    
 
 FROM alpine:3.18
 
-RUN apk --no-cache add tzdata
+# Instalar ffmpeg e tzdata
+RUN apk --no-cache add ffmpeg tzdata
 
 COPY --from=builder /go/frigate-telegram/frigate-telegram /frigate-telegram
 

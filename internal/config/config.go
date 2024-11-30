@@ -24,6 +24,7 @@ type Config struct {
 	WatchDogSleepTime    int
 	EventBeforeSeconds   int
 	SendTextEvent        bool
+	SendInProgressEvent  bool
 	FrigateIncludeCamera []string
 	FrigateExcludeCamera []string
 }
@@ -48,6 +49,7 @@ func New() *Config {
 		RedisTTL:             getEnvAsInt("REDIS_TTL", 1209600), // 7 days
 		EventBeforeSeconds:   getEnvAsInt("EVENT_BEFORE_SECONDS", 300),
 		SendTextEvent:        getEnvAsBool("SEND_TEXT_EVENT", false),
+		SendInProgressEvent:  getEnvAsBool("SEND_IN_PROGRESS_EVENT", false),
 		FrigateExcludeCamera: getEnvAsSlice("FRIGATE_EXCLUDE_CAMERA", []string{"None"}, ","),
 		FrigateIncludeCamera: getEnvAsSlice("FRIGATE_INCLUDE_CAMERA", []string{"All"}, ","),
 	}

@@ -32,7 +32,7 @@ type EventsStruct []struct {
 		TopScore   float64       `json:"top_score"`
 		Type       string        `json:"type"`
 	} `json:"data"`
-	EndTime            float64     `json:"end_time"`
+	EndTime            *float64    `json:"end_time"`
 	FalsePositive      interface{} `json:"false_positive"`
 	HasClip            bool        `json:"has_clip"`
 	HasSnapshot        bool        `json:"has_snapshot"`
@@ -58,7 +58,7 @@ type EventStruct struct {
 		TopScore   float64       `json:"top_score"`
 		Type       string        `json:"type"`
 	} `json:"data"`
-	EndTime            float64     `json:"end_time"`
+	EndTime            *float64    `json:"end_time"`
 	FalsePositive      interface{} `json:"false_positive"`
 	HasClip            bool        `json:"has_clip"`
 	HasSnapshot        bool        `json:"has_snapshot"`
@@ -142,7 +142,7 @@ func SaveThumbnail(EventID string, Thumbnail string, b *bot.Bot) string {
 	return filename
 }
 
-func GetEvents(FrigateURL string, b *bot.Bot, SetBefore bool) EventsStruct {
+func GetEvents(FrigateURL string, b *bot.Bot, SetBefore bool, OnlyInProgress bool) EventsStruct {
 	conf := config.New()
 
 	FrigateURL = FrigateURL + "?limit=" + strconv.Itoa(conf.FrigateEventLimit)
@@ -151,6 +151,10 @@ func GetEvents(FrigateURL string, b *bot.Bot, SetBefore bool) EventsStruct {
 		timestamp := time.Now().UTC().Unix()
 		timestamp = timestamp - int64(conf.EventBeforeSeconds)
 		FrigateURL = FrigateURL + "&before=" + strconv.FormatInt(timestamp, 10)
+	}
+
+	if OnlyInProgress {
+		FrigateURL = FrigateURL + "&in_progress=1"
 	}
 
 	if time.Now().Second()%10 == 0 {
@@ -233,11 +237,20 @@ func SaveClip(EventID string, b *bot.Bot) string {
 	return filename
 }
 
-func SendMessageEvent(FrigateEvent EventStruct, b *bot.Bot) {
+func SendMessageEvent(FrigateEvent EventStruct, b *bot.Bot, InProgress bool) {
 	// Get config
 	conf := config.New()
 	ctx := context.Background()
-	redis.AddNewEvent(FrigateEvent.ID, "InWork", time.Duration(60)*time.Second)
+	watchDogPrefix := ""
+	if InProgress {
+		watchDogPrefix = "WatchDog_"
+	}
+
+	if !InProgress && FrigateEvent.EndTime == nil {
+		return
+	}
+
+	redis.AddNewEvent(watchDogPrefix+FrigateEvent.ID, "InWork", time.Duration(60)*time.Second)
 
 	// Prepare text message
 	text := "*Event*\n"
@@ -248,10 +261,10 @@ func SendMessageEvent(FrigateEvent EventStruct, b *bot.Bot) {
 	}
 	t_start := time.Unix(int64(FrigateEvent.StartTime), 0)
 	text += fmt.Sprintf("┣*Start time*\n┗ `%s`\n", t_start.Format("15:04:05 02/01/2006"))
-	if FrigateEvent.EndTime == 0 {
+	if FrigateEvent.EndTime == nil {
 		text += "┣*End time*\n┗ `In progress`\n"
 	} else {
-		t_end := time.Unix(int64(FrigateEvent.EndTime), 0)
+		t_end := time.Unix(int64(*FrigateEvent.EndTime), 0)
 		text += fmt.Sprintf("┣*End time*\n┗ `%s`\n", t_end.Format("15:04:05 02/01/2006"))
 	}
 	if !conf.SmallEvent {
@@ -278,29 +291,59 @@ func SendMessageEvent(FrigateEvent EventStruct, b *bot.Bot) {
 		MediaAttachment: filePathThumbnail,
 		Caption:         text,
 	}
+	medias := []models.InputMedia{
+		thumb,
+	}
 
 	var video *models.InputMediaVideo
-	if FrigateEvent.HasClip && FrigateEvent.EndTime != 0 {
+	if FrigateEvent.HasClip && FrigateEvent.EndTime != nil {
 		FilePathClip := SaveClip(FrigateEvent.ID, b)
 
 		file, err := os.Open(FilePathClip)
 		if err != nil {
 			ErrorSend("Error opening clip file: "+err.Error(), b, FrigateEvent.ID)
 		}
-		defer file.Close()
-		defer os.Remove(FilePathClip)
-		video = &models.InputMediaVideo{
-			MediaAttachment: file,
-			Media:           "attach://" + FilePathClip,
+
+		fileInfo, err := file.Stat()
+		if err != nil {
+			ErrorSend("Error getting file info: "+err.Error(), b, FrigateEvent.ID)
 		}
 
-	}
+		const maxSize = 50 * 1024 * 1024 // 50MB
+		if fileInfo.Size() > maxSize {
+			err := VerificarFFmpegInstalado()
+			if err != nil {
+				panic(err)
+			}
 
-	medias := []models.InputMedia{
-		thumb,
-	}
-	if video != nil {
-		medias = append(medias, video)
+			options := &VideoSplitOptions{
+				MaxSizeBytes: 49 * 1024 * 1024, // 49 MB
+				OutputFormat: "mp4",
+			}
+
+			multipleFiles, err := SplitVideoWithFFmpeg(file, options)
+			if err != nil {
+				ErrorSend("Error splitting video: "+err.Error(), b, FrigateEvent.ID)
+			}
+			for k, v := range multipleFiles {
+				video = &models.InputMediaVideo{
+					MediaAttachment: v,
+					Media:           "attach://" + k,
+				}
+				medias = append(medias, video)
+				defer os.Remove(k)
+			}
+		} else {
+			video = &models.InputMediaVideo{
+				MediaAttachment: file,
+				Media:           "attach://" + FilePathClip,
+			}
+
+			medias = append(medias, video)
+		}
+
+		defer file.Close()
+		defer os.Remove(FilePathClip)
 	}
 
 	mediaMsg := &bot.SendMediaGroupParams{
@@ -316,10 +359,10 @@ func SendMessageEvent(FrigateEvent EventStruct, b *bot.Bot) {
 
 	var State string
 	State = "InProgress"
-	if FrigateEvent.EndTime != 0 {
+	if FrigateEvent.EndTime != nil {
 		State = "Finished"
 	}
-	redis.AddNewEvent(FrigateEvent.ID, State, time.Duration(conf.RedisTTL)*time.Second)
+	redis.AddNewEvent(watchDogPrefix+FrigateEvent.ID, State, time.Duration(conf.RedisTTL)*time.Second)
 }
 
 func StringsContains(MyStr string, MySlice []string) bool {
@@ -331,10 +374,10 @@ func StringsContains(MyStr string, MySlice []string) bool {
 	return false
 }
 
-func ParseEvents(FrigateEvents EventsStruct, b *bot.Bot, WatchDog bool) {
+func ParseEvents(FrigateEvents EventsStruct, b *bot.Bot, WatchDog bool, InProgress bool) {
 	conf := config.New()
 	RedisKeyPrefix := ""
-	if WatchDog {
+	if WatchDog || InProgress {
 		RedisKeyPrefix = "WatchDog_"
 	}
 	for Event := range FrigateEvents {
@@ -354,7 +397,7 @@ func ParseEvents(FrigateEvents EventsStruct, b *bot.Bot, WatchDog bool) {
 			if WatchDog {
 				SendTextEvent(FrigateEvents[Event], b)
 			} else {
-				go SendMessageEvent(FrigateEvents[Event], b)
+				go SendMessageEvent(FrigateEvents[Event], b, InProgress)
 			}
 		}
 	}
@@ -368,7 +411,7 @@ func getMessageThreadId(camera string) int {
 	threadList["Tras"] = 4
 	threadList["RuaMAto"] = 5
 	threadList["Portao"] = 26
-
+	threadList["TrasPorta"] = 366
 	return threadList[camera]
 }
 
@@ -401,8 +444,25 @@ func SendTextEvent(FrigateEvent EventStruct, b *bot.Bot) {
 func NotifyEvents(b *bot.Bot, FrigateEventsURL string) {
 	conf := config.New()
 	for {
-		FrigateEvents := GetEvents(FrigateEventsURL, b, false)
-		ParseEvents(FrigateEvents, b, true)
+		FrigateEvents := GetEvents(FrigateEventsURL, b, false, false)
+		ParseEvents(FrigateEvents, b, true, false)
 		time.Sleep(time.Duration(conf.WatchDogSleepTime) * time.Second)
 	}
+}
+
+func NotifyInProgressEvents(b *bot.Bot, FrigateEventsURL string) {
+	conf := config.New()
+	for {
+		FrigateEvents := GetEvents(FrigateEventsURL, b, false, true)
+		ParseEvents(FrigateEvents, b, false, true)
+		time.Sleep(time.Duration(conf.WatchDogSleepTime) * time.Second)
+	}
+}
+
+func DefaultEventsLoop(b *bot.Bot, FrigateEventsURL string) {
+	FrigateEvents := GetEvents(FrigateEventsURL, b, true, false)
+	if FrigateEvents == nil {
+		return
+	}
+	ParseEvents(FrigateEvents, b, false, false)
 }
