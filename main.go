@@ -54,10 +54,18 @@ func main() {
 
 	if conf.SendTextEvent {
 		go frigate.NotifyEvents(b, FrigateEventsURL)
+		time.Sleep(time.Duration(conf.WatchDogSleepTime) * time.Second)
+		if time.Now().Second()%10 == 0 {
+			log.Debug.Println("Sleeping for " + strconv.Itoa(conf.WatchDogSleepTime) + " seconds.")
+		}
 	}
 
 	if conf.SendInProgressEvent {
 		go frigate.NotifyInProgressEvents(b, FrigateEventsURL)
+		time.Sleep(time.Duration(conf.WatchDogSleepTime) * time.Second)
+		if time.Now().Second()%10 == 0 {
+			log.Debug.Println("Sleeping for " + strconv.Itoa(conf.WatchDogSleepTime) + " seconds.")
+		}
 	}
 
 	for {

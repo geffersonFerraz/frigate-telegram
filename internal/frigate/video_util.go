@@ -19,7 +19,7 @@ type VideoSplitOptions struct {
 }
 
 // SplitVideoWithFFmpeg divide um arquivo de vídeo usando FFmpeg
-func SplitVideoWithFFmpeg(inputFile *os.File, options *VideoSplitOptions) (map[string]*os.File, error) {
+func SplitVideoWithFFmpeg(inputFile *os.File, options *VideoSplitOptions) ([]string, error) {
 	// Configurações padrão se não forem fornecidas
 	if options == nil {
 		options = &VideoSplitOptions{
@@ -39,7 +39,7 @@ func SplitVideoWithFFmpeg(inputFile *os.File, options *VideoSplitOptions) (map[s
 	ext := filepath.Ext(baseName)
 	baseNameWithoutExt := strings.TrimSuffix(baseName, ext)
 
-	// Obter duração total do vídeo
+	// Calcular o tempo total do vídeo
 	durationCmd := exec.Command("ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
@@ -59,20 +59,23 @@ func SplitVideoWithFFmpeg(inputFile *os.File, options *VideoSplitOptions) (map[s
 		return nil, fmt.Errorf("erro ao converter duração: %v", err)
 	}
 
-	// Calcular número de partes
-	var outputFiles = make(map[string]*os.File)
-	segmentDuration := float64(0)
-	segmentNumber := 1
+	// Calcular a duração máxima de cada parte, considerando o limite de 49MB por parte
+	partDuration := totalDuration * float64(options.MaxSizeBytes) / float64(inputFileInfo.Size())
 
-	// Executar divisão com FFmpeg
-	for segmentDuration < totalDuration {
+	segmentNumber := 1
+	segmentStartTime := 0.0
+	partsNames := []string{}
+	// Para continuar dividindo até que o arquivo de entrada tenha sido completamente dividido
+	for {
 		outputFileName := fmt.Sprintf("/tmp/%s_part%d.%s", baseNameWithoutExt, segmentNumber, options.OutputFormat)
 
-		// Comando FFmpeg para cortar vídeo
+		// Comando FFmpeg para cortar vídeo com tamanho máximo de 49MB
 		cmd := exec.Command("ffmpeg",
 			"-i", inputFile.Name(),
-			"-t", fmt.Sprintf("%.2f", totalDuration-segmentDuration),
+			"-ss", fmt.Sprintf("%.2f", segmentStartTime), // Início do segmento
+			"-t", fmt.Sprintf("%.2f", partDuration), // Duração do segmento
 			"-c", "copy",
+			"-fs", fmt.Sprintf("%d", options.MaxSizeBytes), // Limitar o tamanho do arquivo
 			outputFileName)
 
 		// Capturar possíveis erros
@@ -84,30 +87,18 @@ func SplitVideoWithFFmpeg(inputFile *os.File, options *VideoSplitOptions) (map[s
 			return nil, fmt.Errorf("erro ao dividir vídeo: %v - %s", err, errOutput.String())
 		}
 
-		// Abrir arquivo gerado
-		outputFile, err := os.Open(outputFileName)
-		if err != nil {
-			return nil, fmt.Errorf("erro ao abrir arquivo de saída: %v", err)
-		}
-		outputFiles[outputFileName] = outputFile
+		partsNames = append(partsNames, outputFileName)
 
-		// Verificar tamanho do arquivo
-		outputFileInfo, err := outputFile.Stat()
-		if err != nil {
-			return nil, fmt.Errorf("erro ao obter informações do arquivo de saída: %v", err)
-		}
-
-		// Atualizar duração e número do segmento
-		segmentDuration += float64(outputFileInfo.Size()) / float64(inputFileInfo.Size()) * totalDuration
+		// Atualizar o tempo de início do próximo segmento
+		segmentStartTime += partDuration
 		segmentNumber++
 
-		// Parar se o próximo segmento ultrapassar o tamanho máximo
-		if outputFileInfo.Size() > options.MaxSizeBytes {
+		if segmentStartTime >= totalDuration {
 			break
 		}
 	}
 
-	return outputFiles, nil
+	return partsNames, nil
 }
 
 // CleanupVideoFileParts fecha e remove todos os arquivos de partes
